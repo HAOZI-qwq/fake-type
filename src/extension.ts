@@ -935,6 +935,13 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // 供补全控制器在 Tab/Enter 接受原生补全后立即同步映射进度
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fakeType.syncCompletionProgress', () => {
+            syncContentIndex(false);
+        })
+    );
+
     // 删除映射
     context.subscriptions.push(
         vscode.commands.registerCommand('fakeType.deleteMapping', async (item: TreeItem) => {
@@ -1218,22 +1225,16 @@ export function activate(context: vscode.ExtensionContext) {
 
             // 获取下一个要输出的字符
             const nextChar = fileContent.content[fileContent.index];
-            fileContent.index++;
 
-            // 插入预备的字符
-            const success = await editor.edit(editBuilder => {
-                for (const selection of editor.selections) {
-                    if (selection.isEmpty) {
-                        editBuilder.insert(selection.start, nextChar);
-                    } else {
-                        editBuilder.replace(selection, nextChar);
-                    }
-                }
-            }, { undoStopBefore: false, undoStopAfter: false });
-
-            if (!success) {
-                // 如果编辑失败，回退索引
-                fileContent.index--;
+            // 关键：将预设字符送入 VS Code 原生 typing handler。
+            // default:type 与可覆盖的 type 命令共享原始编辑器 Handler，
+            // 因此会产生 onDidType/keyboard typing 事件，让 IntelliSense 按原生路径工作。
+            try {
+                await vscode.commands.executeCommand('default:type', { text: nextChar });
+                fileContent.index++;
+            } catch (error) {
+                console.error('[Fake Type] default:type failed:', error);
+                continue;
             }
 
             // 每50个字符保存一次进度
