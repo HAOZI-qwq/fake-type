@@ -72,12 +72,4 @@ jobs:
           gh release create "$TAG" "$VSIX" \
             --target "$GITHUB_SHA" \
             --title "Fake Type $TAG" \
-            --notes "## Fake Type $TAG
-
-- 预设字符改走 VS Code 原生 typing pipeline，恢复语言服务正常的 IntelliSense 触发
-- 新增侧边栏‘代码补全’面板，可开关补全增强
-- 支持仅原生、原生 + 兜底、持续强制三种补全模式
-- 可自定义兜底延迟、触发范围、接受补全后的进度同步与诊断日志
-- 保留原有任意按键映射、删除/撤销同步与假终端功能
-
-安装附件中的 $VSIX 即可。"
+            --notes-file "docs/release-notes-v$VERSION.md"
