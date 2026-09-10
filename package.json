@@ -170,7 +170,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "test": "npm run compile && node --test test/suggestionTrigger.test.js",
+    "test": "npm run compile && node --test test/*.test.js",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
