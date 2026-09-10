@@ -30,8 +30,8 @@ export function normalizeCompletionSettings(raw: Partial<CompletionSettings> | u
     const triggerPolicy = POLICIES.has(source.triggerPolicy as CompletionTriggerPolicy)
         ? source.triggerPolicy as CompletionTriggerPolicy
         : DEFAULT_COMPLETION_SETTINGS.triggerPolicy;
-    const delay = Number.isFinite(source.delayMs)
-        ? Math.round(source.delayMs as number)
+    const delay = typeof source.delayMs === 'number' && Number.isFinite(source.delayMs)
+        ? Math.round(source.delayMs)
         : DEFAULT_COMPLETION_SETTINGS.delayMs;
 
     return {
