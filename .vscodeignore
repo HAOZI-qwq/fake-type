@@ -1,0 +1,14 @@
+.vscode/**
+.github/**
+docs/**
+scripts/**
+test/**
+src/**
+v1-backup/**
+demo-video/**
+media/demo.gif
+.gitignore
+tsconfig.json
+package-lock.json
+*.vsix
+out/**/*.map
