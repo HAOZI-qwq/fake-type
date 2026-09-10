@@ -1,12 +1,12 @@
 {
   "name": "fake-type",
   "displayName": "Fake Type",
-  "description": "演示神器 - 假装打代码、假终端输出",
-  "version": "0.1.0",
+  "description": "演示神器 - 假装打代码、原生 IntelliSense、假终端输出",
+  "version": "0.2.0",
   "publisher": "your-name",
   "repository": {
     "type": "git",
-    "url": "https://github.com/example/fake-type"
+    "url": "https://github.com/HAOZI-qwq/fake-type"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -34,6 +34,11 @@
           "type": "webview",
           "id": "fakeTypePasteArea",
           "name": "代码映射"
+        },
+        {
+          "type": "webview",
+          "id": "fakeTypeCompletionSettings",
+          "name": "代码补全"
         },
         {
           "id": "fakeTypeFiles",
