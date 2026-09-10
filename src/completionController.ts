@@ -99,14 +99,15 @@ export class CompletionController implements vscode.Disposable, vscode.WebviewVi
         }
 
         const insertedText = event.contentChanges.map(change => change.text).join('');
-        const lastChar = insertedText.length > 0 ? Array.from(insertedText).at(-1) ?? '' : '';
+        const chars = Array.from(insertedText);
+        const lastChar = chars.length > 0 ? chars[chars.length - 1] : '';
         this.log(`change lang=${event.document.languageId} text=${JSON.stringify(insertedText)} v=${event.document.version}`);
 
         if (this.settings.syncAcceptedCompletion) {
             this.scheduleProgressSync();
         }
 
-        if (!this.settings.enabled || !shouldForceSuggest(lastChar, this.settings)) {
+        if (!shouldForceSuggest(lastChar, this.settings)) {
             return;
         }
 
