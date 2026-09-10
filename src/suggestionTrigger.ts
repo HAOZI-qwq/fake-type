@@ -13,7 +13,7 @@ export class SuggestionTriggerScheduler {
     private timer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(
-        private readonly trigger: () => void | Promise<void>,
+        private readonly trigger: () => void | PromiseLike<void>,
         private readonly delayMs: number = 60
     ) {}
 
