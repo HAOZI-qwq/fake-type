@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
+      - 'codex/**'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -22,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -34,15 +35,49 @@ jobs:
       - name: Compile extension
         run: npm run compile
 
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "vsix=fake-type-$VERSION.vsix" >> "$GITHUB_OUTPUT"
+
       - name: Package VSIX
-        run: npx --yes @vscode/vsce package -o fake-type.vsix
+        run: npx --yes @vscode/vsce package -o "${{ steps.version.outputs.vsix }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fake-type-build-${{ github.sha }}
+          name: fake-type-v${{ steps.version.outputs.version }}-${{ github.sha }}
           path: |
             out/
-            fake-type.vsix
+            ${{ steps.version.outputs.vsix }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          VSIX: ${{ steps.version.outputs.vsix }}
+        shell: bash
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+            exit 0
+          fi
+          gh release create "$TAG" "$VSIX" \
+            --target "$GITHUB_SHA" \
+            --title "Fake Type $TAG" \
+            --notes "## Fake Type $TAG
+
+- 预设字符改走 VS Code 原生 typing pipeline，恢复语言服务正常的 IntelliSense 触发
+- 新增侧边栏‘代码补全’面板，可开关补全增强
+- 支持仅原生、原生 + 兜底、持续强制三种补全模式
+- 可自定义兜底延迟、触发范围、接受补全后的进度同步与诊断日志
+- 保留原有任意按键映射、删除/撤销同步与假终端功能
+
+安装附件中的 $VSIX 即可。"
