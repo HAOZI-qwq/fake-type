@@ -9,6 +9,14 @@ test('finds the longest matching prefix from document start', () => {
   assert.equal(matchingPrefixLength('hello', 'hello'), 5);
 });
 
+test('treats CRLF in the document as LF in the preset', () => {
+  assert.equal(matchingPrefixLength('a\r\n    b', 'a\n    b'), 7);
+});
+
+test('treats LF in the document as CRLF in the preset', () => {
+  assert.equal(matchingPrefixLength('a\n    b', 'a\r\n    b'), 8);
+});
+
 test('accepted completion can advance progress by multiple characters', () => {
   assert.equal(advancePresetIndex(2, 'hello', 'hello world'), 5);
 });
