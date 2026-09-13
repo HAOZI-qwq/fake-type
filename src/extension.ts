@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { matchingPrefixLength } from './presetProgress';
 
 let statusBarItem: vscode.StatusBarItem;
 let enabled = true;
@@ -1421,17 +1422,8 @@ function syncContentIndex(forceSync: boolean = false) {
     const currentText = editor.document.getText();
     const presetContent = fileContent.content;
 
-    // 从头开始匹配，找到最长的匹配前缀
-    let matchIndex = 0;
-    const minLen = Math.min(currentText.length, presetContent.length);
-    
-    for (let i = 0; i < minLen; i++) {
-        if (currentText[i] === presetContent[i]) {
-            matchIndex = i + 1;
-        } else {
-            break;
-        }
-    }
+    // 从头开始匹配，找到最长的匹配前缀；CRLF 与 LF 视为同一种换行。
+    const matchIndex = matchingPrefixLength(currentText, presetContent);
 
     // forceSync 模式：无论大小都更新（用于撤销后同步）
     // 正常模式：只有当检测到的位置比当前索引更大时才更新（用于恢复后同步补全内容）
