@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { matchingPrefixLength, advancePresetIndex } = require('../out/presetProgress.js');
+const {
+  matchingPrefixLength,
+  advancePresetIndex,
+  reconcilePresetIndex
+} = require('../out/presetProgress.js');
 
 test('finds the longest matching prefix from document start', () => {
   assert.equal(matchingPrefixLength('', 'hello'), 0);
@@ -24,4 +28,9 @@ test('accepted completion can advance progress by multiple characters', () => {
 test('document synchronization never moves progress backward', () => {
   assert.equal(advancePresetIndex(5, 'he', 'hello world'), 5);
   assert.equal(advancePresetIndex(5, 'hex', 'hello world'), 5);
+});
+
+test('only explicit rollback synchronization can move progress backward', () => {
+  assert.equal(reconcilePresetIndex(5, 'he', 'hello world', false), 5);
+  assert.equal(reconcilePresetIndex(5, 'he', 'hello world', true), 2);
 });

@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { matchingPrefixLength } from './presetProgress';
+import { matchingPrefixLength, reconcilePresetIndex } from './presetProgress';
+import { PresetInputCoordinator } from './presetInputCoordinator';
 
 let statusBarItem: vscode.StatusBarItem;
 let enabled = true;
@@ -78,6 +79,8 @@ interface FileContent {
     fileName: string;
 }
 const fileContents = new Map<string, FileContent>();
+let presetInputCoordinator: PresetInputCoordinator<string> | undefined;
+const deferredSyncModes = new Map<string, boolean>();
 
 // 终端命令映射
 interface TerminalCommand {
@@ -326,6 +329,7 @@ class PasteAreaViewProvider implements vscode.WebviewViewProvider {
                         return;
                     }
                     const filePath = selectedTargetFile.uri.toString();
+                    await presetInputCoordinator?.whenIdle();
                     fileContents.set(filePath, {
                         content: content,
                         index: 0,
@@ -936,6 +940,19 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // Undo/Redo 是唯一由文档变化触发、允许进度回退的路径。
+    // 普通输入和补全变化只能向前同步，避免迟到的 change 事件把预留索引拉回。
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(event => {
+            if (
+                event.reason === vscode.TextDocumentChangeReason.Undo ||
+                event.reason === vscode.TextDocumentChangeReason.Redo
+            ) {
+                syncDocumentIndex(event.document, true);
+            }
+        })
+    );
+
     // 供补全控制器在 Tab/Enter 接受原生补全后立即同步映射进度
     context.subscriptions.push(
         vscode.commands.registerCommand('fakeType.syncCompletionProgress', () => {
@@ -958,6 +975,7 @@ export function activate(context: vscode.ExtensionContext) {
             );
 
             if (confirm === '确认删除') {
+                await presetInputCoordinator?.whenIdle();
                 fileContents.delete(filePath);
                 saveData(); // 保存到持久存储
                 treeDataProvider.refresh();
@@ -975,6 +993,7 @@ export function activate(context: vscode.ExtensionContext) {
             const fileContent = fileContents.get(filePath);
             if (!fileContent) return;
 
+            await presetInputCoordinator?.whenIdle();
             fileContent.index = 0;
             saveData(); // 保存到持久存储
             treeDataProvider.refresh();
@@ -1154,6 +1173,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             const clipboardText = await vscode.env.clipboard.readText();
             if (clipboardText) {
+                await presetInputCoordinator?.whenIdle();
                 const filePath = editor.document.uri.toString();
                 const fileName = editor.document.fileName.split(/[/\\]/).pop() || '未知';
                 fileContents.set(filePath, { content: clipboardText, index: 0, fileName });
@@ -1167,9 +1187,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 重置当前文件
     context.subscriptions.push(
-        vscode.commands.registerCommand('fakeType.reset', () => {
+        vscode.commands.registerCommand('fakeType.reset', async () => {
             const editor = vscode.window.activeTextEditor;
             if (editor) {
+                await presetInputCoordinator?.whenIdle();
                 const filePath = editor.document.uri.toString();
                 const fileContent = fileContents.get(filePath);
                 if (fileContent) {
@@ -1190,6 +1211,7 @@ export function activate(context: vscode.ExtensionContext) {
                 { placeHolder: '确定清除所有映射吗？' }
             );
             if (confirm === '确认清除所有') {
+                await presetInputCoordinator?.whenIdle();
                 fileContents.clear();
                 saveData(); // 保存到持久存储
                 updateStatusBar();
@@ -1198,77 +1220,52 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 输入队列
-    const typeQueue: { text: string }[] = [];
-    let processingQueue = false;
-
-    async function processTypeQueue() {
-        if (processingQueue || typeQueue.length === 0) {
-            return;
-        }
-        processingQueue = true;
-
-        while (typeQueue.length > 0) {
-            const args = typeQueue.shift()!;
+    // type 命令必须保持同步且轻量：按键到达时立刻预留唯一的下一个字符。
+    // 异步队列只负责按顺序调用 VS Code 原生 default:type，不再读取或修改进度。
+    presetInputCoordinator = new PresetInputCoordinator<string>(
+        async item => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                continue;
-}
-
-            const filePath = editor.document.uri.toString();
-            const fileContent = fileContents.get(filePath);
-
-            // 如果禁用、当前文件没有预备内容、或已输出完毕，使用默认行为
-            if (!enabled || !fileContent || fileContent.index >= fileContent.content.length) {
-                await vscode.commands.executeCommand('default:type', args);
-                continue;
+            if (!editor || editor.document.uri.toString() !== item.target) {
+                return false;
             }
 
-            // 获取下一个要输出的字符
-            const nextChar = fileContent.content[fileContent.index];
+            const fileContent = fileContents.get(item.target);
+            if (
+                fileContent &&
+                item.presetEndIndex !== undefined &&
+                matchingPrefixLength(editor.document.getText(), fileContent.content) >= item.presetEndIndex
+            ) {
+                return true;
+            }
 
-            // 关键：将预设字符送入 VS Code 原生 typing handler。
-            // default:type 与可覆盖的 type 命令共享原始编辑器 Handler，
-            // 因此会产生 onDidType/keyboard typing 事件，让 IntelliSense 按原生路径工作。
             try {
-                await vscode.commands.executeCommand('default:type', { text: nextChar });
-                fileContent.index++;
+                await vscode.commands.executeCommand('default:type', { text: item.text });
+                return true;
             } catch (error) {
                 console.error('[Fake Type] default:type failed:', error);
-                continue;
+                return false;
             }
+        },
+        (filePath, hadFailure) => {
+            const deferredRollback = deferredSyncModes.get(filePath) ?? false;
+            deferredSyncModes.delete(filePath);
+            const document = vscode.workspace.textDocuments.find(
+                candidate => candidate.uri.toString() === filePath
+            );
 
-            // 每50个字符保存一次进度
-            if (fileContent.index % 50 === 0) {
-                saveData();
+            if (document) {
+                // 写入失败时按文档真实内容恢复；成功时只允许补全推动进度向前。
+                syncDocumentIndex(document, hadFailure || deferredRollback);
             }
-
+            saveData();
+            treeDataProvider.refresh();
             updateStatusBar();
-
-            // 每20个字符刷新一次树视图
-            if (fileContent.index % 20 === 0 || fileContent.index >= fileContent.content.length) {
-                treeDataProvider.refresh();
-            }
-
-            // 如果输出完毕
-            if (fileContent.index >= fileContent.content.length) {
-                saveData();
-                treeDataProvider.refresh();
-            }
         }
-
-        processingQueue = false;
-    }
+    );
 
     // 覆盖 type 命令
     context.subscriptions.push(
-        vscode.commands.registerCommand('type', async (args: { text: string }) => {
-            // 回车、Tab 等特殊键使用默认行为
-            if (args.text === '\n' || args.text === '\r\n' || args.text === '\r' || args.text === '\t') {
-                await vscode.commands.executeCommand('default:type', args);
-                return;
-            }
-
+        vscode.commands.registerCommand('type', (args: { text: string }) => {
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 return;
@@ -1276,25 +1273,31 @@ export function activate(context: vscode.ExtensionContext) {
 
             const filePath = editor.document.uri.toString();
             const fileContent = fileContents.get(filePath);
+            const isSpecialInput = args.text === '\n' || args.text === '\r\n' ||
+                args.text === '\r' || args.text === '\t';
 
-            // 如果禁用或没有映射，直接使用默认行为
+            // 特殊键不消耗预设内容，但不能越过已经预留、尚未写完的字符。
+            if (isSpecialInput) {
+                if (presetInputCoordinator!.hasPending(filePath)) {
+                    presetInputCoordinator!.enqueue(filePath, args.text);
+                } else {
+                    void vscode.commands.executeCommand('default:type', args);
+                }
+                return;
+            }
+
             if (!enabled || !fileContent || fileContent.index >= fileContent.content.length) {
-                await vscode.commands.executeCommand('default:type', args);
+                if (presetInputCoordinator!.hasPending(filePath)) {
+                    presetInputCoordinator!.enqueue(filePath, args.text);
+                } else {
+                    void vscode.commands.executeCommand('default:type', args);
+                }
                 return;
             }
 
-            // 每次输入前同步索引（处理 Ctrl+Z 撤销的情况）
-            syncContentIndex(true);
-
-            // 再次检查索引（可能因为撤销导致内容变化）
-            if (fileContent.index >= fileContent.content.length) {
-                await vscode.commands.executeCommand('default:type', args);
-                return;
-            }
-
-            // 添加到队列并处理
-            typeQueue.push(args);
-            processTypeQueue();
+            // 这是关键的原子步骤：在任何 await 之前推进索引并冻结待写字符。
+            presetInputCoordinator!.reserve(filePath, fileContent);
+            updateStatusBar();
         })
     );
 
@@ -1306,17 +1309,8 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const filePath = editor.document.uri.toString();
-            const fileContent = fileContents.get(filePath);
-
-            // 如果有映射且索引大于0，回退索引
-            if (enabled && fileContent && fileContent.index > 0) {
-                fileContent.index--;
-                updateStatusBar();
-                if (fileContent.index % 10 === 0) {
-                    treeDataProvider.refresh();
-                }
-            }
+            // 删除必须排在已预留输入之后，随后再按文档真实内容回退进度。
+            await presetInputCoordinator?.whenIdle();
 
             // 执行删除操作
             await editor.edit(editBuilder => {
@@ -1348,7 +1342,8 @@ export function activate(context: vscode.ExtensionContext) {
                         editBuilder.delete(selection);
                     }
             }
-        });
+            });
+            syncDocumentIndex(editor.document, true);
         })
     );
 
@@ -1360,17 +1355,7 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const filePath = editor.document.uri.toString();
-            const fileContent = fileContents.get(filePath);
-
-            // 如果有映射且索引大于0，回退索引
-            if (enabled && fileContent && fileContent.index > 0) {
-                fileContent.index--;
-                updateStatusBar();
-                if (fileContent.index % 10 === 0) {
-                    treeDataProvider.refresh();
-                }
-            }
+            await presetInputCoordinator?.whenIdle();
 
             // 执行删除操作
             await editor.edit(editBuilder => {
@@ -1403,41 +1388,43 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                 }
             });
+            syncDocumentIndex(editor.document, true);
         })
     );
 
 }
 
-// 同步当前文档内容与预设内容的索引
-// 用于：暂停后手动输入/补全，恢复后自动跳过已输入的部分
-// 也用于：Ctrl+Z 撤销后，同步回退索引
-function syncContentIndex(forceSync: boolean = false) {
+// 同步当前活动文档；普通调用只向前，明确的 Undo/Redo 才允许回退。
+function syncContentIndex(allowRollback: boolean = false) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
 
-    const filePath = editor.document.uri.toString();
+    syncDocumentIndex(editor.document, allowRollback);
+}
+
+function syncDocumentIndex(document: vscode.TextDocument, allowRollback: boolean = false) {
+    const filePath = document.uri.toString();
     const fileContent = fileContents.get(filePath);
     if (!fileContent) return;
 
-    const currentText = editor.document.getText();
-    const presetContent = fileContent.content;
+    // 文档变化事件可能早于队列完成。此时只记账，绝不能用尚未落盘的文本回退预留索引。
+    if (presetInputCoordinator?.hasPending(filePath)) {
+        deferredSyncModes.set(filePath, (deferredSyncModes.get(filePath) ?? false) || allowRollback);
+        return;
+    }
 
-    // 从头开始匹配，找到最长的匹配前缀；CRLF 与 LF 视为同一种换行。
-    const matchIndex = matchingPrefixLength(currentText, presetContent);
+    const nextIndex = reconcilePresetIndex(
+        fileContent.index,
+        document.getText(),
+        fileContent.content,
+        allowRollback
+    );
 
-    // forceSync 模式：无论大小都更新（用于撤销后同步）
-    // 正常模式：只有当检测到的位置比当前索引更大时才更新（用于恢复后同步补全内容）
-    if (forceSync) {
-        if (matchIndex !== fileContent.index) {
-            fileContent.index = matchIndex;
-            saveData();
-            treeDataProvider.refresh();
-            updateStatusBar();
-        }
-    } else if (matchIndex > fileContent.index) {
-        fileContent.index = matchIndex;
+    if (nextIndex !== fileContent.index) {
+        fileContent.index = nextIndex;
         saveData();
         treeDataProvider.refresh();
+        updateStatusBar();
     }
 }
 

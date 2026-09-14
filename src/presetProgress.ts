@@ -34,3 +34,13 @@ function newlineLengthAt(text: string, index: number): number {
 export function advancePresetIndex(currentIndex: number, currentText: string, presetContent: string): number {
     return Math.max(currentIndex, matchingPrefixLength(currentText, presetContent));
 }
+
+export function reconcilePresetIndex(
+    currentIndex: number,
+    currentText: string,
+    presetContent: string,
+    allowRollback: boolean
+): number {
+    const matchIndex = matchingPrefixLength(currentText, presetContent);
+    return allowRollback ? matchIndex : Math.max(currentIndex, matchIndex);
+}
