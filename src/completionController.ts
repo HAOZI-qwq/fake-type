@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import {
+    COMPLETION_STORAGE_KEY,
     CompletionSettings,
     DEFAULT_COMPLETION_SETTINGS,
     normalizeCompletionSettings,
     shouldForceSuggest
 } from './completionSettings';
 
-const COMPLETION_STORAGE_KEY = 'fakeType.completionSettings.v2';
 const FILE_CONTENT_STORAGE_KEY = 'fakeType.fileContents';
 
 interface PersistedFileContent {

@@ -7,7 +7,9 @@ const {
   retreatPresetIndex,
   advancePresetIndexFromInsertedText,
   isExpectedPresetWrite,
-  shouldIgnoreActiveWrite
+  shouldIgnoreActiveWrite,
+  shouldOvertypeAutoClosingCharacter,
+  getReservedWriteAction
 } = require('../out/presetProgress.js');
 
 test('finds the longest matching prefix from document start', () => {
@@ -80,4 +82,22 @@ test('active pass-through writes do not cancel queued preset input', () => {
 
 test('unrelated inserted text does not move preset progress', () => {
   assert.equal(advancePresetIndexFromInsertedText(3, 'different', 0, 'console.log(value);'), 3);
+});
+
+test('an existing auto-closing character at the cursor is overtyped instead of skipped', () => {
+  assert.equal(typeof shouldOvertypeAutoClosingCharacter, 'function');
+  assert.equal(shouldOvertypeAutoClosingCharacter(')', ')'), true);
+  assert.equal(shouldOvertypeAutoClosingCharacter(']', ']'), true);
+  assert.equal(shouldOvertypeAutoClosingCharacter('}', '}'), true);
+  assert.equal(shouldOvertypeAutoClosingCharacter('"', '"'), true);
+  assert.equal(shouldOvertypeAutoClosingCharacter('a', 'a'), false);
+  assert.equal(shouldOvertypeAutoClosingCharacter(')', ''), false);
+});
+
+test('a covered auto-closer still uses native typing so the cursor moves past it', () => {
+  assert.equal(typeof getReservedWriteAction, 'function');
+  assert.equal(getReservedWriteAction(true, ')', ')'), 'type');
+  assert.equal(getReservedWriteAction(true, ']', ']'), 'type');
+  assert.equal(getReservedWriteAction(true, 'e', ''), 'skip');
+  assert.equal(getReservedWriteAction(false, ')', ')'), 'type');
 });

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     advancePresetIndexFromInsertedText,
+    getReservedWriteAction,
     isExpectedPresetWrite,
     matchingPrefixLength,
     reconcilePresetIndex,
@@ -10,6 +11,14 @@ import {
     shouldIgnoreActiveWrite
 } from './presetProgress';
 import { PresetInputCoordinator } from './presetInputCoordinator';
+import {
+    COMPLETION_STORAGE_KEY,
+    CompletionSettings,
+    getPresetCompletion,
+    normalizeCompletionSettings,
+    shouldHideSuggestWidgetBeforeTyping,
+    shouldProvidePresetCompletion
+} from './completionSettings';
 
 let statusBarItem: vscode.StatusBarItem;
 let enabled = true;
@@ -893,6 +902,9 @@ class TerminalWebViewProvider implements vscode.WebviewViewProvider {
 
 export function activate(context: vscode.ExtensionContext) {
     extensionContext = context;
+    const readCompletionSettings = () => normalizeCompletionSettings(
+        context.globalState.get<Partial<CompletionSettings>>(COMPLETION_STORAGE_KEY)
+    );
 
     // 加载保存的数据
     loadData();
@@ -939,6 +951,60 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarItem.command = 'fakeType.toggle';
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
+
+    // 为当前预设标识符提供一个确定、置顶的候选项。只在编辑器中的真实前缀
+    // 与预设前缀一致时返回，避免把已经偏离的内容强行替换掉。
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider('*', {
+            provideCompletionItems(document, position) {
+                const fileContent = fileContents.get(document.uri.toString());
+                if (
+                    !enabled ||
+                    !fileContent ||
+                    !shouldProvidePresetCompletion(readCompletionSettings())
+                ) {
+                    return undefined;
+                }
+
+                const presetCompletion = getPresetCompletion(
+                    fileContent.content,
+                    fileContent.index
+                );
+                if (
+                    !presetCompletion ||
+                    position.character < presetCompletion.replacementLength
+                ) {
+                    return undefined;
+                }
+
+                const rangeStart = position.translate(
+                    0,
+                    -presetCompletion.replacementLength
+                );
+                const range = new vscode.Range(rangeStart, position);
+                const expectedPrefix = presetCompletion.insertText.slice(
+                    0,
+                    presetCompletion.replacementLength
+                );
+                if (document.getText(range) !== expectedPrefix) {
+                    return undefined;
+                }
+
+                const item = new vscode.CompletionItem(
+                    presetCompletion.label,
+                    vscode.CompletionItemKind.Text
+                );
+                item.insertText = presetCompletion.insertText;
+                item.filterText = presetCompletion.filterText;
+                item.range = range;
+                item.preselect = presetCompletion.preselect;
+                item.sortText = presetCompletion.sortText;
+                item.commitCharacters = presetCompletion.commitCharacters;
+                item.detail = 'Fake Type · 预设代码';
+                return [item];
+            }
+        })
+    );
 
     // 监听编辑器切换
     context.subscriptions.push(
@@ -1240,15 +1306,31 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             const fileContent = fileContents.get(item.target);
-            if (
+            const alreadyCoveredByDocument = Boolean(
                 fileContent &&
                 item.presetEndIndex !== undefined &&
                 matchingPrefixLength(editor.document.getText(), fileContent.content) >= item.presetEndIndex
+            );
+            const cursor = editor.selection.active;
+            const lineText = editor.document.lineAt(cursor.line).text;
+            const textAtCursor = lineText.slice(cursor.character, cursor.character + item.text.length);
+            if (
+                getReservedWriteAction(
+                    alreadyCoveredByDocument,
+                    item.text,
+                    textAtCursor
+                ) === 'skip'
             ) {
                 return true;
             }
 
             try {
+                if (
+                    shouldProvidePresetCompletion(readCompletionSettings()) &&
+                    shouldHideSuggestWidgetBeforeTyping(item.text)
+                ) {
+                    await vscode.commands.executeCommand('hideSuggestWidget');
+                }
                 await vscode.commands.executeCommand('default:type', { text: item.text });
                 return true;
             } catch (error) {

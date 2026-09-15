@@ -118,6 +118,31 @@ export function shouldIgnoreActiveWrite(
     return !hasPresetRange || isExpectedPresetWrite(activeText, insertedText);
 }
 
+const AUTO_CLOSING_CHARACTERS = new Set([')', ']', '}', '"', "'", '`']);
+
+export function shouldOvertypeAutoClosingCharacter(
+    reservedText: string,
+    textAtCursor: string
+): boolean {
+    return reservedText === textAtCursor && AUTO_CLOSING_CHARACTERS.has(reservedText);
+}
+
+export type ReservedWriteAction = 'type' | 'skip';
+
+export function getReservedWriteAction(
+    alreadyCoveredByDocument: boolean,
+    reservedText: string,
+    textAtCursor: string
+): ReservedWriteAction {
+    if (!alreadyCoveredByDocument) {
+        return 'type';
+    }
+
+    return shouldOvertypeAutoClosingCharacter(reservedText, textAtCursor)
+        ? 'type'
+        : 'skip';
+}
+
 function replacementStartCandidates(
     currentIndex: number,
     replacedTextLength: number,
