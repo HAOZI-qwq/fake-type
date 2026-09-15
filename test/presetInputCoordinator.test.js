@@ -134,3 +134,37 @@ test('external completion can cancel reserved writes that have not started', asy
   assert.equal(written.join(''), 'c');
   assert.equal(coordinator.hasPending('file:///demo.txt'), false);
 });
+
+test('queued reservations can be canceled even while another target is active', async () => {
+  let releaseFirstWrite;
+  const firstWriteBlocked = new Promise(resolve => {
+    releaseFirstWrite = resolve;
+  });
+  const settled = [];
+  const coordinator = new PresetInputCoordinator(
+    async item => {
+      if (item.target === 'file:///other.txt') {
+        await firstWriteBlocked;
+      }
+      return true;
+    },
+    (target, hadFailure) => settled.push({ target, hadFailure })
+  );
+  const progress = { content: 'xyz', index: 0 };
+
+  coordinator.reserve('file:///other.txt', { content: 'a', index: 0 });
+  coordinator.reserve('file:///demo.txt', progress);
+  coordinator.reserve('file:///demo.txt', progress);
+
+  assert.equal(coordinator.cancelQueuedReservations('file:///demo.txt', progress), 2);
+  assert.equal(progress.index, 0);
+  assert.equal(coordinator.hasPending('file:///demo.txt'), false);
+
+  releaseFirstWrite();
+  await coordinator.whenIdle();
+
+  assert.deepEqual(settled, [
+    { target: 'file:///demo.txt', hadFailure: false },
+    { target: 'file:///other.txt', hadFailure: false }
+  ]);
+});

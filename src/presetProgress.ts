@@ -110,6 +110,14 @@ export function isExpectedPresetWrite(activeText: string, insertedText: string):
     return activeText.replace(/\r\n/g, '\n') === insertedText.replace(/\r\n/g, '\n');
 }
 
+export function shouldIgnoreActiveWrite(
+    hasPresetRange: boolean,
+    activeText: string,
+    insertedText: string
+): boolean {
+    return !hasPresetRange || isExpectedPresetWrite(activeText, insertedText);
+}
+
 function replacementStartCandidates(
     currentIndex: number,
     replacedTextLength: number,

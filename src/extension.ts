@@ -6,7 +6,8 @@ import {
     isExpectedPresetWrite,
     matchingPrefixLength,
     reconcilePresetIndex,
-    retreatPresetIndex
+    retreatPresetIndex,
+    shouldIgnoreActiveWrite
 } from './presetProgress';
 import { PresetInputCoordinator } from './presetInputCoordinator';
 
@@ -1472,23 +1473,28 @@ function syncInsertedDocumentChanges(
     let nextIndex = fileContent.index;
     for (const change of changes) {
         const activeReservation = presetInputCoordinator?.getActiveReservation(filePath);
-        const expectedPresetWrite =
-            activeReservation?.presetStartIndex !== undefined &&
-            isExpectedPresetWrite(activeReservation.text, change.text);
-        if (expectedPresetWrite) {
+        const ignoreActiveWrite = activeReservation !== undefined &&
+            shouldIgnoreActiveWrite(
+                activeReservation.presetStartIndex !== undefined,
+                activeReservation.text,
+                change.text
+            );
+        if (ignoreActiveWrite) {
             continue;
         }
 
         let alignmentIndex = fileContent.index;
-        if (activeReservation?.presetStartIndex !== undefined) {
+        if (presetInputCoordinator?.hasPending(filePath)) {
             presetInputCoordinator?.cancelQueuedReservations(filePath, fileContent);
             nextIndex = Math.min(nextIndex, fileContent.index);
             const normalizedInsertedText = change.text.replace(/\r\n/g, '\n');
-            const normalizedActiveText = activeReservation.text.replace(/\r\n/g, '\n');
-            alignmentIndex = change.rangeLength === 0 &&
+            const normalizedActiveText = activeReservation?.text.replace(/\r\n/g, '\n');
+            alignmentIndex = activeReservation?.presetStartIndex !== undefined &&
+                change.rangeLength === 0 &&
+                normalizedActiveText !== undefined &&
                 normalizedInsertedText.startsWith(normalizedActiveText)
                     ? activeReservation.presetStartIndex
-                    : activeReservation.presetEndIndex ?? activeReservation.presetStartIndex;
+                    : activeReservation?.presetStartIndex ?? fileContent.index;
         }
 
         nextIndex = Math.max(
@@ -1533,12 +1539,12 @@ function getDeletedCharacterCount(
     editor: vscode.TextEditor,
     direction: 'left' | 'right'
 ): number {
-    let maximumCount = 0;
+    let deletedCharacterCount = 0;
 
     for (const selection of editor.selections) {
         if (!selection.isEmpty) {
             const selectedText = editor.document.getText(selection).replace(/\r\n/g, '\n');
-            maximumCount = Math.max(maximumCount, Array.from(selectedText).length);
+            deletedCharacterCount += Array.from(selectedText).length;
             continue;
         }
 
@@ -1548,11 +1554,11 @@ function getDeletedCharacterCount(
             : position.character < editor.document.lineAt(position.line).text.length ||
                 position.line < editor.document.lineCount - 1;
         if (canDelete) {
-            maximumCount = Math.max(maximumCount, 1);
+            deletedCharacterCount++;
         }
     }
 
-    return maximumCount;
+    return deletedCharacterCount;
 }
 
 function isLeadingSurrogate(codeUnit: number): boolean {

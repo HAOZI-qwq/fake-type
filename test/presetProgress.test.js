@@ -6,7 +6,8 @@ const {
   reconcilePresetIndex,
   retreatPresetIndex,
   advancePresetIndexFromInsertedText,
-  isExpectedPresetWrite
+  isExpectedPresetWrite,
+  shouldIgnoreActiveWrite
 } = require('../out/presetProgress.js');
 
 test('finds the longest matching prefix from document start', () => {
@@ -57,6 +58,7 @@ test('accepted completion advances from the current preset region without a docu
 test('completion replacement length disambiguates repeated preset text', () => {
   assert.equal(advancePresetIndexFromInsertedText(3, 'foo', 3, 'foofooZ'), 3);
   assert.equal(advancePresetIndexFromInsertedText(3, 'foo', 0, 'foofooZ'), 6);
+  assert.equal(advancePresetIndexFromInsertedText(5, 'abcdefgh', 5, 'abcdefgh'), 8);
 });
 
 test('completion replacement length remains aligned across LF and CRLF differences', () => {
@@ -68,6 +70,12 @@ test('an active preset write is recognized across selection replacement and newl
   assert.equal(isExpectedPresetWrite('x', 'x'), true);
   assert.equal(isExpectedPresetWrite('\n', '\r\n'), true);
   assert.equal(isExpectedPresetWrite('x', 'xy'), false);
+});
+
+test('active pass-through writes do not cancel queued preset input', () => {
+  assert.equal(shouldIgnoreActiveWrite(false, '\n', '\r\n    '), true);
+  assert.equal(shouldIgnoreActiveWrite(true, '\n', '\r\n    '), false);
+  assert.equal(shouldIgnoreActiveWrite(false, '\n', '\r\n'), true);
 });
 
 test('unrelated inserted text does not move preset progress', () => {

@@ -73,10 +73,6 @@ export class PresetInputCoordinator<TTarget> {
     }
 
     cancelQueuedReservations(target: TTarget, progress: PresetProgress): number {
-        if (this.activeItem?.target !== target) {
-            return 0;
-        }
-
         let earliestCancelledIndex: number | undefined;
         let cancelledCount = 0;
         const retainedItems: ReservedInput<TTarget>[] = [];
@@ -100,7 +96,13 @@ export class PresetInputCoordinator<TTarget> {
         this.queue.splice(0, this.queue.length, ...retainedItems);
         progress.index = Math.min(progress.index, earliestCancelledIndex);
         const remaining = (this.pendingByTarget.get(target) ?? cancelledCount) - cancelledCount;
-        this.pendingByTarget.set(target, remaining);
+        if (remaining > 0) {
+            this.pendingByTarget.set(target, remaining);
+        } else {
+            this.pendingByTarget.delete(target);
+            const hadFailure = this.failedTargets.delete(target);
+            this.onTargetIdle?.(target, hadFailure);
+        }
         return cancelledCount;
     }
 
