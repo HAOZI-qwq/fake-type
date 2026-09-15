@@ -3,7 +3,10 @@ const assert = require('node:assert/strict');
 const {
   matchingPrefixLength,
   advancePresetIndex,
-  reconcilePresetIndex
+  reconcilePresetIndex,
+  retreatPresetIndex,
+  advancePresetIndexFromInsertedText,
+  isExpectedPresetWrite
 } = require('../out/presetProgress.js');
 
 test('finds the longest matching prefix from document start', () => {
@@ -33,4 +36,40 @@ test('document synchronization never moves progress backward', () => {
 test('only explicit rollback synchronization can move progress backward', () => {
   assert.equal(reconcilePresetIndex(5, 'he', 'hello world', false), 5);
   assert.equal(reconcilePresetIndex(5, 'he', 'hello world', true), 2);
+});
+
+test('backspace retreats one logical preset character without resetting progress', () => {
+  assert.equal(retreatPresetIndex(8, 'function test() {}'), 7);
+  assert.equal(retreatPresetIndex(3, 'a\r\nb'), 1);
+  assert.equal(retreatPresetIndex(3, 'a😀b'), 1);
+});
+
+test('accepted completion advances from the current preset region without a document-wide prefix match', () => {
+  const preset = 'console.log(value);';
+
+  // VS Code may replace the already typed prefix with the whole completion.
+  assert.equal(advancePresetIndexFromInsertedText(3, 'console.log', 3, preset), 11);
+
+  // Some completion providers insert only the remaining suffix.
+  assert.equal(advancePresetIndexFromInsertedText(3, 'sole.log', 0, preset), 11);
+});
+
+test('completion replacement length disambiguates repeated preset text', () => {
+  assert.equal(advancePresetIndexFromInsertedText(3, 'foo', 3, 'foofooZ'), 3);
+  assert.equal(advancePresetIndexFromInsertedText(3, 'foo', 0, 'foofooZ'), 6);
+});
+
+test('completion replacement length remains aligned across LF and CRLF differences', () => {
+  assert.equal(advancePresetIndexFromInsertedText(4, 'a\nbX', 3, 'a\r\nbX'), 5);
+  assert.equal(advancePresetIndexFromInsertedText(3, 'a\r\nbX', 4, 'a\nbX'), 4);
+});
+
+test('an active preset write is recognized across selection replacement and newline formats', () => {
+  assert.equal(isExpectedPresetWrite('x', 'x'), true);
+  assert.equal(isExpectedPresetWrite('\n', '\r\n'), true);
+  assert.equal(isExpectedPresetWrite('x', 'xy'), false);
+});
+
+test('unrelated inserted text does not move preset progress', () => {
+  assert.equal(advancePresetIndexFromInsertedText(3, 'different', 0, 'console.log(value);'), 3);
 });

@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { matchingPrefixLength, reconcilePresetIndex } from './presetProgress';
+import {
+    advancePresetIndexFromInsertedText,
+    isExpectedPresetWrite,
+    matchingPrefixLength,
+    reconcilePresetIndex,
+    retreatPresetIndex
+} from './presetProgress';
 import { PresetInputCoordinator } from './presetInputCoordinator';
 
 let statusBarItem: vscode.StatusBarItem;
@@ -940,8 +946,8 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Undo/Redo 是唯一由文档变化触发、允许进度回退的路径。
-    // 普通输入和补全变化只能向前同步，避免迟到的 change 事件把预留索引拉回。
+    // Undo/Redo 才允许按整篇文档回退。普通外部编辑（尤其是 Tab/Enter
+    // 接受补全）只根据本次插入文本向前推进，避免依赖文档开头完全匹配。
     context.subscriptions.push(
         vscode.workspace.onDidChangeTextDocument(event => {
             if (
@@ -949,7 +955,10 @@ export function activate(context: vscode.ExtensionContext) {
                 event.reason === vscode.TextDocumentChangeReason.Redo
             ) {
                 syncDocumentIndex(event.document, true);
+                return;
             }
+
+            syncInsertedDocumentChanges(event.document, event.contentChanges);
         })
     );
 
@@ -1311,17 +1320,27 @@ export function activate(context: vscode.ExtensionContext) {
 
             // 删除必须排在已预留输入之后，随后再按文档真实内容回退进度。
             await presetInputCoordinator?.whenIdle();
+            const deletedCharacterCount = getDeletedCharacterCount(editor, 'left');
 
             // 执行删除操作
-            await editor.edit(editBuilder => {
+            const editApplied = await editor.edit(editBuilder => {
                     for (const selection of editor.selections) {
                     if (selection.isEmpty) {
                         // 删除光标前一个字符
                         const position = selection.start;
                         if (position.character > 0) {
+                            const lineText = editor.document.lineAt(position.line).text;
+                            const previousCodeUnit = lineText.charCodeAt(position.character - 1);
+                            const deleteWidth =
+                                position.character >= 2 &&
+                                previousCodeUnit >= 0xDC00 &&
+                                previousCodeUnit <= 0xDFFF &&
+                                isLeadingSurrogate(lineText.charCodeAt(position.character - 2))
+                                    ? 2
+                                    : 1;
                             const deleteRange = new vscode.Range(
                                 position.line,
-                                position.character - 1,
+                                position.character - deleteWidth,
                                 position.line,
                                 position.character
                             );
@@ -1343,7 +1362,9 @@ export function activate(context: vscode.ExtensionContext) {
                     }
             }
             });
-            syncDocumentIndex(editor.document, true);
+            if (editApplied && deletedCharacterCount > 0) {
+                retreatDocumentProgress(editor.document, deletedCharacterCount);
+            }
         })
     );
 
@@ -1356,20 +1377,28 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             await presetInputCoordinator?.whenIdle();
+            const deletedCharacterCount = getDeletedCharacterCount(editor, 'right');
 
             // 执行删除操作
-            await editor.edit(editBuilder => {
+            const editApplied = await editor.edit(editBuilder => {
                 for (const selection of editor.selections) {
                     if (selection.isEmpty) {
                         // 删除光标后一个字符
                         const position = selection.start;
                         const line = editor.document.lineAt(position.line);
                         if (position.character < line.text.length) {
+                            const currentCodeUnit = line.text.charCodeAt(position.character);
+                            const deleteWidth =
+                                isLeadingSurrogate(currentCodeUnit) &&
+                                position.character + 1 < line.text.length &&
+                                isTrailingSurrogate(line.text.charCodeAt(position.character + 1))
+                                    ? 2
+                                    : 1;
                             const deleteRange = new vscode.Range(
                                 position.line,
                                 position.character,
                                 position.line,
-                                position.character + 1
+                                position.character + deleteWidth
                             );
                             editBuilder.delete(deleteRange);
                         } else if (position.line < editor.document.lineCount - 1) {
@@ -1388,7 +1417,9 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                 }
             });
-            syncDocumentIndex(editor.document, true);
+            if (editApplied && deletedCharacterCount > 0) {
+                retreatDocumentProgress(editor.document, deletedCharacterCount);
+            }
         })
     );
 
@@ -1426,6 +1457,110 @@ function syncDocumentIndex(document: vscode.TextDocument, allowRollback: boolean
         treeDataProvider.refresh();
         updateStatusBar();
     }
+}
+
+function syncInsertedDocumentChanges(
+    document: vscode.TextDocument,
+    changes: readonly vscode.TextDocumentContentChangeEvent[]
+) {
+    const filePath = document.uri.toString();
+    const fileContent = fileContents.get(filePath);
+    if (!fileContent) {
+        return;
+    }
+
+    let nextIndex = fileContent.index;
+    for (const change of changes) {
+        const activeReservation = presetInputCoordinator?.getActiveReservation(filePath);
+        const expectedPresetWrite =
+            activeReservation?.presetStartIndex !== undefined &&
+            isExpectedPresetWrite(activeReservation.text, change.text);
+        if (expectedPresetWrite) {
+            continue;
+        }
+
+        let alignmentIndex = fileContent.index;
+        if (activeReservation?.presetStartIndex !== undefined) {
+            presetInputCoordinator?.cancelQueuedReservations(filePath, fileContent);
+            nextIndex = Math.min(nextIndex, fileContent.index);
+            const normalizedInsertedText = change.text.replace(/\r\n/g, '\n');
+            const normalizedActiveText = activeReservation.text.replace(/\r\n/g, '\n');
+            alignmentIndex = change.rangeLength === 0 &&
+                normalizedInsertedText.startsWith(normalizedActiveText)
+                    ? activeReservation.presetStartIndex
+                    : activeReservation.presetEndIndex ?? activeReservation.presetStartIndex;
+        }
+
+        nextIndex = Math.max(
+            nextIndex,
+            advancePresetIndexFromInsertedText(
+                alignmentIndex,
+                change.text,
+                change.rangeLength,
+                fileContent.content
+            )
+        );
+    }
+
+    if (nextIndex !== fileContent.index) {
+        fileContent.index = nextIndex;
+        saveData();
+        treeDataProvider.refresh();
+        updateStatusBar();
+    }
+}
+
+function retreatDocumentProgress(document: vscode.TextDocument, logicalCharacters: number) {
+    const fileContent = fileContents.get(document.uri.toString());
+    if (!fileContent || logicalCharacters <= 0) {
+        return;
+    }
+
+    const nextIndex = retreatPresetIndex(
+        fileContent.index,
+        fileContent.content,
+        logicalCharacters
+    );
+    if (nextIndex !== fileContent.index) {
+        fileContent.index = nextIndex;
+        saveData();
+        treeDataProvider.refresh();
+        updateStatusBar();
+    }
+}
+
+function getDeletedCharacterCount(
+    editor: vscode.TextEditor,
+    direction: 'left' | 'right'
+): number {
+    let maximumCount = 0;
+
+    for (const selection of editor.selections) {
+        if (!selection.isEmpty) {
+            const selectedText = editor.document.getText(selection).replace(/\r\n/g, '\n');
+            maximumCount = Math.max(maximumCount, Array.from(selectedText).length);
+            continue;
+        }
+
+        const position = selection.start;
+        const canDelete = direction === 'left'
+            ? position.character > 0 || position.line > 0
+            : position.character < editor.document.lineAt(position.line).text.length ||
+                position.line < editor.document.lineCount - 1;
+        if (canDelete) {
+            maximumCount = Math.max(maximumCount, 1);
+        }
+    }
+
+    return maximumCount;
+}
+
+function isLeadingSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+}
+
+function isTrailingSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xDC00 && codeUnit <= 0xDFFF;
 }
 
 function updateStatusBar() {

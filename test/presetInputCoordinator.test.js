@@ -99,3 +99,38 @@ test('reserved input records its preset range so editor auto-insertions can be s
     ]
   );
 });
+
+test('external completion can cancel reserved writes that have not started', async () => {
+  let releaseFirstWrite;
+  const firstWriteBlocked = new Promise(resolve => {
+    releaseFirstWrite = resolve;
+  });
+  const written = [];
+  const coordinator = new PresetInputCoordinator(async item => {
+    if (written.length === 0) {
+      await firstWriteBlocked;
+    }
+    written.push(item.text);
+    return true;
+  });
+  const progress = { content: 'console', index: 0 };
+
+  coordinator.reserve('file:///demo.txt', progress);
+  coordinator.reserve('file:///demo.txt', progress);
+  coordinator.reserve('file:///demo.txt', progress);
+
+  assert.deepEqual(coordinator.getActiveReservation('file:///demo.txt'), {
+    target: 'file:///demo.txt',
+    text: 'c',
+    presetStartIndex: 0,
+    presetEndIndex: 1
+  });
+  assert.equal(coordinator.cancelQueuedReservations('file:///demo.txt', progress), 2);
+  assert.equal(progress.index, 1);
+
+  releaseFirstWrite();
+  await coordinator.whenIdle();
+
+  assert.equal(written.join(''), 'c');
+  assert.equal(coordinator.hasPending('file:///demo.txt'), false);
+});

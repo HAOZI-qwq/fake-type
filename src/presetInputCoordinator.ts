@@ -23,6 +23,7 @@ export class PresetInputCoordinator<TTarget> {
     private readonly pendingByTarget = new Map<TTarget, number>();
     private readonly failedTargets = new Set<TTarget>();
     private readonly idleWaiters: Array<() => void> = [];
+    private activeItem: ReservedInput<TTarget> | undefined;
     private processing = false;
 
     constructor(
@@ -67,6 +68,42 @@ export class PresetInputCoordinator<TTarget> {
         return (this.pendingByTarget.get(target) ?? 0) > 0;
     }
 
+    getActiveReservation(target: TTarget): ReservedInput<TTarget> | undefined {
+        return this.activeItem?.target === target ? { ...this.activeItem } : undefined;
+    }
+
+    cancelQueuedReservations(target: TTarget, progress: PresetProgress): number {
+        if (this.activeItem?.target !== target) {
+            return 0;
+        }
+
+        let earliestCancelledIndex: number | undefined;
+        let cancelledCount = 0;
+        const retainedItems: ReservedInput<TTarget>[] = [];
+
+        for (const item of this.queue) {
+            if (item.target === target && item.presetStartIndex !== undefined) {
+                earliestCancelledIndex = Math.min(
+                    earliestCancelledIndex ?? item.presetStartIndex,
+                    item.presetStartIndex
+                );
+                cancelledCount++;
+            } else {
+                retainedItems.push(item);
+            }
+        }
+
+        if (cancelledCount === 0 || earliestCancelledIndex === undefined) {
+            return 0;
+        }
+
+        this.queue.splice(0, this.queue.length, ...retainedItems);
+        progress.index = Math.min(progress.index, earliestCancelledIndex);
+        const remaining = (this.pendingByTarget.get(target) ?? cancelledCount) - cancelledCount;
+        this.pendingByTarget.set(target, remaining);
+        return cancelledCount;
+    }
+
     whenIdle(): Promise<void> {
         if (!this.processing && this.queue.length === 0) {
             return Promise.resolve();
@@ -84,11 +121,14 @@ export class PresetInputCoordinator<TTarget> {
         try {
             while (this.queue.length > 0) {
                 const item = this.queue.shift()!;
+                this.activeItem = item;
                 let succeeded = false;
                 try {
                     succeeded = await this.writer(item);
                 } catch {
                     succeeded = false;
+                } finally {
+                    this.activeItem = undefined;
                 }
 
                 if (!succeeded) {
